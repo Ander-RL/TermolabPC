@@ -1,0 +1,8 @@
+{
+  "name": "TermoLab PC",
+  "description": "Panel de control multiplataforma en tiempo real para diagnóstico térmico, historial de voltajes, curiosidades de hardware y consultoría con IA para PC Master Race.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
