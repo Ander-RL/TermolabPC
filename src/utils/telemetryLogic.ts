@@ -100,7 +100,7 @@ export function evaluateAlerts(
   for (const rule of rules) {
     if (!rule.enabled) continue;
 
-    let currentValue = 0;
+    let currentValue: number | null = null;
     let shouldEvaluate = true;
 
     switch (rule.metric) {
@@ -117,18 +117,29 @@ export function evaluateAlerts(
         currentValue = sample.nvmeTemp;
         break;
       case 'fanRunaway': {
-        const peakFan = Math.max(sample.fans.cpuFanRpm, sample.fans.gpuFanRpm);
-        const lowLoad = sample.cpuLoad < 35 && sample.gpuLoad < 35;
+        const fanCandidates = [sample.fans.cpuFanRpm, sample.fans.gpuFanRpm].filter(
+          (v): v is number => v !== null,
+        );
+        if (fanCandidates.length === 0) {
+          shouldEvaluate = false;
+          break;
+        }
+        const peakFan = Math.max(...fanCandidates);
+        const lowLoad = sample.cpuLoad < 35 && (sample.gpuLoad === null || sample.gpuLoad < 35);
         shouldEvaluate = lowLoad;
         currentValue = peakFan;
         break;
       }
       case 'rail12vDeviation':
+        if (sample.voltages.rail12v === null) {
+          shouldEvaluate = false;
+          break;
+        }
         currentValue = round1(Math.abs(((sample.voltages.rail12v - 12.0) / 12.0) * 100));
         break;
     }
 
-    if (!shouldEvaluate) continue;
+    if (!shouldEvaluate || currentValue === null) continue;
 
     if (currentValue >= rule.criticalThreshold) {
       triggered.push({
@@ -180,19 +191,22 @@ export function calculateVoltageStats(history: TelemetrySample[]): VoltageRailSt
   ];
 
   return specs.map((spec) => {
-    if (history.length === 0) {
+    const values = history
+      .map((s) => s.voltages[spec.key])
+      .filter((v): v is number => v !== null && Number.isFinite(v));
+
+    if (values.length === 0) {
       return {
         ...spec,
-        current: spec.nominal,
-        min: spec.nominal,
-        max: spec.nominal,
-        avg: spec.nominal,
-        deviationPct: 0,
-        inSpec: true,
+        current: null,
+        min: null,
+        max: null,
+        avg: null,
+        deviationPct: null,
+        inSpec: null,
       };
     }
 
-    const values = history.map((s) => s.voltages[spec.key]);
     const current = values[values.length - 1];
     const min = Math.min(...values);
     const max = Math.max(...values);
@@ -213,18 +227,51 @@ export function calculateVoltageStats(history: TelemetrySample[]): VoltageRailSt
 }
 
 export function diagnoseFanAcousticCause(sample: TelemetrySample): AcousticDiagnosis {
-  const hotspotDeltaGpu = round1(sample.gpuHotspot - sample.gpuTemp);
-  const hotspotDeltaCpu = round1(sample.cpuHotspot - sample.cpuTemp);
-  const lowLoad = sample.cpuLoad < 35 && sample.gpuLoad < 35;
-  const peakFan = Math.max(sample.fans.cpuFanRpm, sample.fans.gpuFanRpm);
-  const isFanRunawayAtLowLoad = lowLoad && peakFan >= 1900;
+  const hotspotDeltaGpu =
+    sample.gpuHotspot !== null && sample.gpuTemp !== null
+      ? round1(sample.gpuHotspot - sample.gpuTemp)
+      : null;
+  const hotspotDeltaCpu =
+    sample.cpuHotspot !== null && sample.cpuTemp !== null
+      ? round1(sample.cpuHotspot - sample.cpuTemp)
+      : null;
 
-  if (hotspotDeltaGpu >= 18 && sample.gpuHotspot >= 88) {
+  if (
+    sample.requiresLhm &&
+    sample.fans.cpuFanRpm === null &&
+    sample.fans.gpuFanRpm === null &&
+    sample.voltages.rail12v === null
+  ) {
+    return {
+      headline: 'Sensores de placa base, RPM y voltajes no detectados (requiere LibreHardwareMonitor)',
+      severity: 'unavailable',
+      primaryCause: 'Windows 10 restringe el acceso directo a chips Super I/O sin driver de kernel',
+      explanation:
+        'El servidor está leyendo tu carga real de CPU y memoria RAM desde el sistema operativo, pero los sensores de temperatura de placa, RPM de ventiladores y voltajes ATX aparecen como N/A porque es necesario instalar y ejecutar LibreHardwareMonitor como Administrador (Remote Web Server en el puerto 8085).',
+      hotspotDeltaGpu,
+      hotspotDeltaCpu,
+      isFanRunawayAtLowLoad: false,
+    };
+  }
+
+  const lowLoad = sample.cpuLoad < 35 && (sample.gpuLoad === null || sample.gpuLoad < 35);
+  const fanCandidates = [sample.fans.cpuFanRpm, sample.fans.gpuFanRpm].filter(
+    (v): v is number => v !== null,
+  );
+  const peakFan = fanCandidates.length > 0 ? Math.max(...fanCandidates) : null;
+  const isFanRunawayAtLowLoad = lowLoad && peakFan !== null && peakFan >= 1900;
+
+  if (
+    hotspotDeltaGpu !== null &&
+    hotspotDeltaGpu >= 18 &&
+    sample.gpuHotspot !== null &&
+    sample.gpuHotspot >= 88
+  ) {
     return {
       headline: 'Delta térmico GPU elevado: pasta térmica degradada (efecto pump-out)',
       severity: 'critical',
       primaryCause: 'Degradación térmica interna tras años de uso (no polvo)',
-      explanation: `Aunque el núcleo GPU marca ${sample.gpuTemp}°C, el Hotspot alcanza ${sample.gpuHotspot}°C (diferencia de ${hotspotDeltaGpu}°C). Cuando el delta supera 15-18°C en un PC limpio, la pasta térmica de fábrica se ha secado o desplazado, disparando los ventiladores al ${sample.fans.gpuFanPct}% (${sample.fans.gpuFanRpm} RPM).`,
+      explanation: `Aunque el núcleo GPU marca ${sample.gpuTemp}°C, el Hotspot alcanza ${sample.gpuHotspot}°C (diferencia de ${hotspotDeltaGpu}°C). Cuando el delta supera 15-18°C en un PC limpio, la pasta térmica de fábrica se ha secado o desplazado, disparando los ventiladores al ${sample.fans.gpuFanPct ?? '--'}% (${sample.fans.gpuFanRpm ?? '--'} RPM).`,
       hotspotDeltaGpu,
       hotspotDeltaCpu,
       isFanRunawayAtLowLoad,
@@ -236,19 +283,22 @@ export function diagnoseFanAcousticCause(sample: TelemetrySample): AcousticDiagn
       headline: 'Ventiladores desbocados con carga baja: curva BIOS / modo DC vs PWM',
       severity: 'warning',
       primaryCause: 'Control PWM mal configurado o curva agresiva tras actualización/reset de BIOS',
-      explanation: `La carga del sistema es baja (CPU ${sample.cpuLoad}%, GPU ${sample.gpuLoad}%), pero los ventiladores giran a ${peakFan} RPM. Si el PC está limpio, revisa si un cabezal de placa base cambió de PWM a modo DC (voltaje fijo a 12V) o si el botón Eco/Hybrid de tu fuente está desactivado.`,
+      explanation: `La carga del sistema es baja (CPU ${sample.cpuLoad}%, GPU ${sample.gpuLoad ?? 'N/A'}%), pero los ventiladores giran a ${peakFan} RPM. Si el PC está limpio, revisa si un cabezal de placa base cambió de PWM a modo DC (voltaje fijo a 12V) o si el botón Eco/Hybrid de tu fuente está desactivado.`,
       hotspotDeltaGpu,
       hotspotDeltaCpu,
       isFanRunawayAtLowLoad,
     };
   }
 
-  if (sample.cpuTemp >= 85 || sample.vrmTemp >= 85) {
+  if (
+    (sample.cpuTemp !== null && sample.cpuTemp >= 85) ||
+    (sample.vrmTemp !== null && sample.vrmTemp >= 85)
+  ) {
     return {
       headline: 'Carga térmica sostenida: Vcore elevado o flujo de aire restringido',
       severity: 'critical',
       primaryCause: 'Voltaje automático agresivo (Vcore/PBO) o transferencia térmica deficiente',
-      explanation: `CPU a ${sample.cpuTemp}°C (Vcore ${sample.voltages.vcore.toFixed(3)}V) y VRM a ${sample.vrmTemp}°C. Aplicar un ligero undervolt y suavizar la histéresis de los ventiladores reducirá drásticamente el ruido sin perder rendimiento.`,
+      explanation: `CPU a ${sample.cpuTemp ?? 'N/A'}°C (Vcore ${sample.voltages.vcore !== null ? `${sample.voltages.vcore.toFixed(3)}V` : 'N/A'}) y VRM a ${sample.vrmTemp ?? 'N/A'}°C. Aplicar un ligero undervolt y suavizar la histéresis de los ventiladores reducirá drásticamente el ruido sin perder rendimiento.`,
       hotspotDeltaGpu,
       hotspotDeltaCpu,
       isFanRunawayAtLowLoad,
@@ -259,7 +309,7 @@ export function diagnoseFanAcousticCause(sample: TelemetrySample): AcousticDiagn
     headline: 'Acústica equilibrada y transferencia térmica estable',
     severity: 'nominal',
     primaryCause: 'Curva térmica dentro de parámetros normales',
-    explanation: `Delta GPU Hotspot de ${hotspotDeltaGpu}°C y ventiladores en régimen moderado (${sample.fans.cpuFanRpm} RPM CPU / ${sample.fans.gpuFanRpm} RPM GPU).`,
+    explanation: `Delta GPU Hotspot de ${hotspotDeltaGpu !== null ? `${hotspotDeltaGpu}°C` : 'N/A'} y ventiladores en régimen moderado (${sample.fans.cpuFanRpm ?? 'N/A'} RPM CPU / ${sample.fans.gpuFanRpm ?? 'N/A'} RPM GPU).`,
     hotspotDeltaGpu,
     hotspotDeltaCpu,
     isFanRunawayAtLowLoad: false,
@@ -297,7 +347,7 @@ const PROFILE_TARGETS: Record<Exclude<TelemetryProfileId, 'host-live'>, ProfileT
     cpuTemp: 69,
     cpuHotspotOffset: 14,
     gpuTemp: 68,
-    gpuHotspotOffset: 24, // 92°C Hotspot -> triggers 95%+ fan curve despite low load & clean dust!
+    gpuHotspotOffset: 24,
     vrmTemp: 64,
     nvmeTemp: 51,
     cpuFanRpm: 2380,
@@ -349,9 +399,9 @@ const PROFILE_TARGETS: Record<Exclude<TelemetryProfileId, 'host-live'>, ProfileT
     aioPumpRpm: 2150,
     sysFan1Rpm: 620,
     sysFan2Rpm: 600,
-    gpuFanRpm: 0, // Zero RPM fan stop active!
+    gpuFanRpm: 0,
     gpuFanPct: 0,
-    psuFanRpm: 0, // PSU Eco / Hybrid mode active!
+    psuFanRpm: 0,
     vcore: 1.045,
     rail12v: 12.03,
     powerWatts: 74,
@@ -394,12 +444,11 @@ export function generateSimulationTick(
   nowMs: number = Date.now(),
 ): TelemetrySample {
   const target = PROFILE_TARGETS[profile];
-  // Deterministic organic oscillation + small micro-jitter
   const wave = Math.sin(tickIndex * 0.45);
   const fastWave = Math.cos(tickIndex * 1.15);
 
-  const smooth = (prevVal: number | undefined, targetVal: number, amplitude: number, min: number, max: number) => {
-    const base = prevVal === undefined ? targetVal : prevVal * 0.65 + targetVal * 0.35;
+  const smooth = (prevVal: number | null | undefined, targetVal: number, amplitude: number, min: number, max: number) => {
+    const base = prevVal === undefined || prevVal === null ? targetVal : prevVal * 0.65 + targetVal * 0.35;
     return round1(clamp(base + wave * amplitude + fastWave * (amplitude * 0.4), min, max));
   };
 
@@ -428,6 +477,8 @@ export function generateSimulationTick(
     timeLabel: formatTimeLabel(nowMs),
     sourceLabel: target.label,
     osPlatform: 'Windows 10 Pro (Perfil Diagnóstico)',
+    requiresLhm: false,
+    lhmConnected: false,
     cpuTemp,
     cpuHotspot,
     gpuTemp,

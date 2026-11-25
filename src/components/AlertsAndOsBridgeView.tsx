@@ -16,7 +16,9 @@ interface AlertsAndOsBridgeViewProps {
     cpuModel: string;
     cores: number;
     lhmConnected: boolean;
+    lhmEndpoint?: string | null;
     sensorsCount: number;
+    detectedSensors?: Array<{ category: string; text: string; value: string; path: string }>;
     loading: boolean;
   };
   onRefreshHostStatus: () => void;
@@ -260,8 +262,68 @@ export const AlertsAndOsBridgeView: React.FC<AlertsAndOsBridgeViewProps> = ({
                 ? `● Conectado (${hostStatus.sensorsCount} sensores)`
                 : '▲ No detectado en 127.0.0.1:8085'}
             </p>
+            {hostStatus.lhmEndpoint && (
+              <p className="text-[11px] font-mono text-slate-500">{hostStatus.lhmEndpoint}</p>
+            )}
           </div>
         </div>
+
+        {!hostStatus.lhmConnected ? (
+          <div className="rounded-lg border border-amber-500/30 bg-amber-950/20 p-3.5 text-xs text-amber-100/90 space-y-1.5">
+            <p className="font-semibold text-amber-200">
+              ¿Tienes LibreHardwareMonitor abierto pero sigue apareciendo como no detectado?
+            </p>
+            <p className="text-amber-100/80 leading-relaxed">
+              En la ventana de LibreHardwareMonitor debes activar su servidor web local: entra en{' '}
+              <span className="font-mono text-amber-200">Options → Remote Web Server → Run</span> (puerto{' '}
+              <span className="font-mono text-amber-200">8085</span>) y ejecutarlo como Administrador. Luego pulsa{' '}
+              <strong>Re-escanear sensores locales</strong>.
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-2 pt-3 border-t border-[#1E2636]">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1">
+              <span className="text-xs font-semibold text-slate-200">
+                Sensores recibidos en directo desde LibreHardwareMonitor ({hostStatus.detectedSensors?.length ?? 0} mostrados)
+              </span>
+              <span className="text-[11px] text-slate-400">
+                Si faltan ventiladores o raíles +12V/+5V, ejecuta LibreHardwareMonitor como Administrador y marca{' '}
+                <span className="font-mono text-slate-300">File → Hardware → Motherboard</span>.
+              </span>
+            </div>
+
+            {hostStatus.detectedSensors && hostStatus.detectedSensors.length > 0 && (
+              <div className="max-h-56 overflow-y-auto rounded-lg border border-[#1E2636] bg-[#0B0E14]">
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead>
+                    <tr className="border-b border-[#1E2636] text-slate-400">
+                      <th className="py-2 px-3 font-medium">Categoría</th>
+                      <th className="py-2 px-3 font-medium">Sensor</th>
+                      <th className="py-2 px-3 font-medium text-right">Lectura</th>
+                      <th className="py-2 px-3 font-medium hidden md:table-cell">Ruta LHM</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#1E2636]">
+                    {hostStatus.detectedSensors.map((s, idx) => (
+                      <tr key={`${s.path}-${idx}`} className="hover:bg-[#121722]">
+                        <td className="py-1.5 px-3 font-mono text-cyan-300 uppercase text-[11px]">
+                          {s.category}
+                        </td>
+                        <td className="py-1.5 px-3 text-slate-200 font-medium">{s.text}</td>
+                        <td className="py-1.5 px-3 text-right font-mono tabular-nums text-emerald-300">
+                          {s.value}
+                        </td>
+                        <td className="py-1.5 px-3 font-mono text-[11px] text-slate-500 hidden md:table-cell truncate max-w-xs">
+                          {s.path}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
       </section>
     </div>
   );

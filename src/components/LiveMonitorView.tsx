@@ -1,5 +1,5 @@
 import React from 'react';
-import { Pause, Play, RefreshCw, AlertTriangle } from 'lucide-react';
+import { AlertTriangle, ExternalLink, Pause, Play, RefreshCw, ShieldAlert } from 'lucide-react';
 import type {
   AcousticDiagnosis,
   TelemetryProfileId,
@@ -24,6 +24,7 @@ interface LiveMonitorViewProps {
   };
   onGoToComponents: () => void;
   onGoToAi: () => void;
+  onGoToAlerts: () => void;
 }
 
 const PROFILE_OPTIONS: Array<{ id: TelemetryProfileId; label: string }> = [
@@ -34,10 +35,16 @@ const PROFILE_OPTIONS: Array<{ id: TelemetryProfileId; label: string }> = [
   { id: 'host-live', label: 'Host Real (SO)' },
 ];
 
-function statusLabel(val: number, warn: number, crit: number) {
+function statusLabel(val: number | null, warn: number, crit: number) {
+  if (val === null) return { text: '— N/A (Sin LHM)', cls: 'text-slate-400' };
   if (val >= crit) return { text: '✖ Crítico', cls: 'text-rose-400' };
   if (val >= warn) return { text: '▲ Elevado', cls: 'text-amber-400' };
   return { text: '● Nominal', cls: 'text-emerald-400' };
+}
+
+function fmtNum(val: number | null, decimals = 1, suffix = ''): string {
+  if (val === null) return 'N/A';
+  return `${val.toFixed(decimals)}${suffix}`;
 }
 
 export const LiveMonitorView: React.FC<LiveMonitorViewProps> = ({
@@ -52,22 +59,89 @@ export const LiveMonitorView: React.FC<LiveMonitorViewProps> = ({
   hostBridgeInfo,
   onGoToComponents,
   onGoToAi,
+  onGoToAlerts,
 }) => {
   const timestamps = history.map((s) => s.timeLabel);
 
   const cpuStatus = statusLabel(current.cpuTemp, 78, 88);
-  const gpuHotStatus = statusLabel(current.gpuHotspot, 88, 98);
-  const peakFan = Math.max(current.fans.cpuFanRpm, current.fans.gpuFanRpm);
+  const gpuHotStatus = statusLabel(current.gpuHotspot ?? current.gpuTemp, 88, 98);
+  const fanCandidates = [current.fans.cpuFanRpm, current.fans.gpuFanRpm].filter(
+    (v): v is number => v !== null,
+  );
+  const peakFan = fanCandidates.length > 0 ? Math.max(...fanCandidates) : null;
   const fanStatus = statusLabel(peakFan, 1900, 2400);
-  const loadStatus = statusLabel(Math.max(current.cpuLoad, current.gpuLoad), 80, 95);
+  const loadPeak =
+    current.gpuLoad !== null ? Math.max(current.cpuLoad, current.gpuLoad) : current.cpuLoad;
+  const loadStatus = statusLabel(loadPeak, 80, 95);
+
+  const gpuDelta =
+    current.gpuHotspot !== null && current.gpuTemp !== null
+      ? (current.gpuHotspot - current.gpuTemp).toFixed(1)
+      : null;
 
   const fanRows = [
-    { name: 'CPU_FAN (Disipador / Radiador)', rpm: current.fans.cpuFanRpm, duty: `${current.fans.cpuFanPct}%`, note: current.fans.cpuFanPct >= 85 ? 'Régimen máximo' : 'Control PWM' },
-    { name: 'AIO_PUMP / Auxiliar', rpm: current.fans.aioPumpRpm, duty: '100%', note: 'Flujo constante' },
-    { name: 'GPU_FAN (Triple ventilador)', rpm: current.fans.gpuFanRpm, duty: `${current.fans.gpuFanPct}%`, note: current.fans.gpuFanRpm === 0 ? 'Zero-RPM activo' : `Hotspot ${current.gpuHotspot}°C` },
-    { name: 'SYS_FAN1 (Frontal entrada)', rpm: current.fans.sysFan1Rpm, duty: `${Math.round((current.fans.sysFan1Rpm / 2000) * 100)}%`, note: 'Presión positiva' },
-    { name: 'SYS_FAN2 (Trasero extracción)', rpm: current.fans.sysFan2Rpm, duty: `${Math.round((current.fans.sysFan2Rpm / 2000) * 100)}%`, note: 'Extracción VRM' },
-    { name: 'PSU_FAN (Fuente ATX)', rpm: current.fans.psuFanRpm, duty: current.fans.psuFanRpm === 0 ? '0%' : 'Activo', note: current.fans.psuFanRpm === 0 ? 'Botón Hybrid/Eco activo' : 'Ventilación activa' },
+    {
+      name: 'CPU_FAN (Disipador / Radiador)',
+      rpm: current.fans.cpuFanRpm !== null ? `${current.fans.cpuFanRpm} RPM` : 'N/A',
+      duty: current.fans.cpuFanPct !== null ? `${current.fans.cpuFanPct}%` : 'N/A',
+      note:
+        current.fans.cpuFanPct === null
+          ? 'Requiere LibreHardwareMonitor'
+          : current.fans.cpuFanPct >= 85
+            ? 'Régimen máximo'
+            : 'Control PWM',
+    },
+    {
+      name: 'AIO_PUMP / Auxiliar',
+      rpm: current.fans.aioPumpRpm !== null ? `${current.fans.aioPumpRpm} RPM` : 'N/A',
+      duty: current.fans.aioPumpRpm !== null ? '100%' : 'N/A',
+      note: current.fans.aioPumpRpm !== null ? 'Flujo constante' : 'Requiere LibreHardwareMonitor',
+    },
+    {
+      name: 'GPU_FAN (Ventilación GPU)',
+      rpm: current.fans.gpuFanRpm !== null ? `${current.fans.gpuFanRpm} RPM` : 'N/A',
+      duty: current.fans.gpuFanPct !== null ? `${current.fans.gpuFanPct}%` : 'N/A',
+      note:
+        current.fans.gpuFanRpm === null && current.fans.gpuFanPct === null
+          ? 'Requiere LibreHardwareMonitor'
+          : current.fans.gpuFanRpm === 0
+            ? 'Zero-RPM activo'
+            : `Hotspot ${fmtNum(current.gpuHotspot, 1, '°C')}`,
+    },
+    {
+      name: 'SYS_FAN1 (Frontal entrada)',
+      rpm: current.fans.sysFan1Rpm !== null ? `${current.fans.sysFan1Rpm} RPM` : 'N/A',
+      duty:
+        current.fans.sysFan1Rpm !== null
+          ? `${Math.round((current.fans.sysFan1Rpm / 2000) * 100)}%`
+          : 'N/A',
+      note: current.fans.sysFan1Rpm !== null ? 'Presión positiva' : 'Requiere LibreHardwareMonitor',
+    },
+    {
+      name: 'SYS_FAN2 (Trasero extracción)',
+      rpm: current.fans.sysFan2Rpm !== null ? `${current.fans.sysFan2Rpm} RPM` : 'N/A',
+      duty:
+        current.fans.sysFan2Rpm !== null
+          ? `${Math.round((current.fans.sysFan2Rpm / 2000) * 100)}%`
+          : 'N/A',
+      note: current.fans.sysFan2Rpm !== null ? 'Extracción VRM' : 'Requiere LibreHardwareMonitor',
+    },
+    {
+      name: 'PSU_FAN (Fuente ATX)',
+      rpm: current.fans.psuFanRpm !== null ? `${current.fans.psuFanRpm} RPM` : 'N/A',
+      duty:
+        current.fans.psuFanRpm === null
+          ? 'N/A'
+          : current.fans.psuFanRpm === 0
+            ? '0%'
+            : 'Activo',
+      note:
+        current.fans.psuFanRpm === null
+          ? 'Requiere LibreHardwareMonitor o fuente digital'
+          : current.fans.psuFanRpm === 0
+            ? 'Botón Hybrid/Eco activo'
+            : 'Ventilación activa',
+    },
   ];
 
   return (
@@ -82,10 +156,10 @@ export const LiveMonitorView: React.FC<LiveMonitorViewProps> = ({
             <span className="font-mono text-slate-400">{current.osPlatform}</span>
           </div>
           {profile === 'host-live' && (
-            <span className="text-cyan-300">
+            <span className={hostBridgeInfo.lhmConnected ? 'text-emerald-400 font-medium' : 'text-amber-300 font-medium'}>
               {hostBridgeInfo.lhmConnected
-                ? `Puente LibreHardwareMonitor conectado (${hostBridgeInfo.osLabel})`
-                : `Host: ${hostBridgeInfo.osLabel} · Activa LibreHardwareMonitor en Windows 10 para RPM/voltajes`}
+                ? `● Puente LibreHardwareMonitor conectado (${hostBridgeInfo.osLabel})`
+                : `▲ LibreHardwareMonitor no detectado (${hostBridgeInfo.osLabel})`}
             </span>
           )}
         </div>
@@ -118,6 +192,45 @@ export const LiveMonitorView: React.FC<LiveMonitorViewProps> = ({
           </button>
         </div>
       </section>
+
+      {/* LibreHardwareMonitor Required Notice when in host-live without LHM */}
+      {current.requiresLhm && (
+        <section
+          aria-label="Aviso de requisito de LibreHardwareMonitor"
+          className="bg-amber-950/25 border border-amber-500/40 rounded-xl p-4 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4"
+        >
+          <div className="flex items-start gap-3">
+            <ShieldAlert className="h-5 w-5 text-amber-400 shrink-0 mt-0.5" />
+            <div className="space-y-1">
+              <h2 className="text-sm font-semibold text-amber-200">
+                Es necesario instalar LibreHardwareMonitor para leer los sensores de tu placa base
+              </h2>
+              <p className="text-xs text-amber-100/80 leading-relaxed">
+                Ahora mismo ves datos reales del sistema operativo (<strong>Carga CPU % y RAM</strong>), pero Windows 10 bloquea la lectura directa de temperaturas de placa, RPM de ventiladores, GPU Hotspot y voltajes. Los campos que dependen de esos chips muestran <strong>N/A</strong> hasta que abras LibreHardwareMonitor como Administrador con <em>Options → Remote Web Server → Run</em> (puerto 8085).
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <a
+              href="https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/releases"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-semibold bg-amber-500 text-slate-950 hover:bg-amber-400 transition-colors whitespace-nowrap"
+            >
+              <span>Descargar LibreHardwareMonitor</span>
+              <ExternalLink className="h-3.5 w-3.5" />
+            </a>
+            <button
+              type="button"
+              onClick={onGoToAlerts}
+              className="px-3.5 py-2 rounded-lg text-xs font-medium bg-[#0B0E14] text-amber-200 border border-amber-500/35 hover:bg-amber-950/40 transition-colors whitespace-nowrap"
+            >
+              Ver estado del puente
+            </button>
+          </div>
+        </section>
+      )}
 
       {/* Active Overheating Alerts Banner */}
       {activeAlerts.length > 0 && (
@@ -155,12 +268,12 @@ export const LiveMonitorView: React.FC<LiveMonitorViewProps> = ({
           </div>
           <div className="mt-2 flex items-baseline gap-1.5">
             <span className="text-3xl font-mono font-bold tabular-nums text-slate-100">
-              {current.cpuTemp.toFixed(1)}
+              {current.cpuTemp !== null ? current.cpuTemp.toFixed(1) : 'N/A'}
             </span>
-            <span className="text-xs font-mono text-slate-400">°C</span>
+            {current.cpuTemp !== null && <span className="text-xs font-mono text-slate-400">°C</span>}
           </div>
           <p className="mt-2 text-xs text-slate-400 font-mono tabular-nums">
-            Hotspot: {current.cpuHotspot.toFixed(1)}°C · Vcore: {current.voltages.vcore.toFixed(3)}V
+            Hotspot: {fmtNum(current.cpuHotspot, 1, '°C')} · Vcore: {fmtNum(current.voltages.vcore, 3, 'V')}
           </p>
         </div>
 
@@ -171,12 +284,20 @@ export const LiveMonitorView: React.FC<LiveMonitorViewProps> = ({
           </div>
           <div className="mt-2 flex items-baseline gap-1.5">
             <span className="text-3xl font-mono font-bold tabular-nums text-slate-100">
-              {current.gpuHotspot.toFixed(1)}
+              {current.gpuHotspot !== null
+                ? current.gpuHotspot.toFixed(1)
+                : current.gpuTemp !== null
+                  ? current.gpuTemp.toFixed(1)
+                  : 'N/A'}
             </span>
-            <span className="text-xs font-mono text-slate-400">°C Hotspot</span>
+            {(current.gpuHotspot !== null || current.gpuTemp !== null) && (
+              <span className="text-xs font-mono text-slate-400">
+                {current.gpuHotspot !== null ? '°C Hotspot' : '°C Core'}
+              </span>
+            )}
           </div>
           <p className="mt-2 text-xs text-slate-400 font-mono tabular-nums">
-            Núcleo: {current.gpuTemp.toFixed(1)}°C · Delta: +{(current.gpuHotspot - current.gpuTemp).toFixed(1)}°C
+            Núcleo: {fmtNum(current.gpuTemp, 1, '°C')} · Delta: {gpuDelta !== null ? `+${gpuDelta}°C` : 'N/A'}
           </p>
         </div>
 
@@ -187,12 +308,12 @@ export const LiveMonitorView: React.FC<LiveMonitorViewProps> = ({
           </div>
           <div className="mt-2 flex items-baseline gap-1.5">
             <span className="text-3xl font-mono font-bold tabular-nums text-slate-100">
-              {peakFan}
+              {peakFan !== null ? peakFan : 'N/A'}
             </span>
-            <span className="text-xs font-mono text-slate-400">RPM</span>
+            {peakFan !== null && <span className="text-xs font-mono text-slate-400">RPM</span>}
           </div>
           <p className="mt-2 text-xs text-slate-400 font-mono tabular-nums">
-            CPU: {current.fans.cpuFanPct}% · GPU: {current.fans.gpuFanPct}% · PSU: {current.fans.psuFanRpm} RPM
+            CPU: {current.fans.cpuFanPct !== null ? `${current.fans.cpuFanPct}%` : 'N/A'} · GPU: {current.fans.gpuFanPct !== null ? `${current.fans.gpuFanPct}%` : 'N/A'} · PSU: {current.fans.psuFanRpm !== null ? `${current.fans.psuFanRpm} RPM` : 'N/A'}
           </p>
         </div>
 
@@ -208,12 +329,12 @@ export const LiveMonitorView: React.FC<LiveMonitorViewProps> = ({
             <span className="text-xs font-mono text-slate-400">% CPU</span>
             <span className="text-slate-600 mx-1">/</span>
             <span className="text-xl font-mono font-semibold tabular-nums text-slate-200">
-              {current.gpuLoad.toFixed(0)}%
+              {current.gpuLoad !== null ? `${current.gpuLoad.toFixed(0)}%` : 'N/A'}
             </span>
             <span className="text-xs font-mono text-slate-400">GPU</span>
           </div>
           <p className="mt-2 text-xs text-slate-400 font-mono tabular-nums">
-            RAM: {current.ramUsedGb}/{current.ramTotalGb} GB · {current.powerWatts}W est.
+            RAM: {current.ramUsedGb}/{current.ramTotalGb} GB · {current.powerWatts !== null ? `${current.powerWatts}W` : 'Consumo N/A'}
           </p>
         </div>
       </section>
@@ -226,7 +347,7 @@ export const LiveMonitorView: React.FC<LiveMonitorViewProps> = ({
               className={
                 diagnosis.severity === 'critical'
                   ? 'text-rose-400'
-                  : diagnosis.severity === 'warning'
+                  : diagnosis.severity === 'warning' || diagnosis.severity === 'unavailable'
                     ? 'text-amber-400'
                     : 'text-emerald-400'
               }
@@ -235,7 +356,9 @@ export const LiveMonitorView: React.FC<LiveMonitorViewProps> = ({
                 ? '✖ Diagnóstico acústico prioritario'
                 : diagnosis.severity === 'warning'
                   ? '▲ Anomalía de curva detectada'
-                  : '● Operación acústica saludable'}
+                  : diagnosis.severity === 'unavailable'
+                    ? '▲ Puente hardware requerido (LHM)'
+                    : '● Operación acústica saludable'}
             </span>
             <span className="text-slate-600" aria-hidden="true">·</span>
             <span className="text-slate-400">{diagnosis.primaryCause}</span>
@@ -279,6 +402,7 @@ export const LiveMonitorView: React.FC<LiveMonitorViewProps> = ({
           referenceBands={[
             { value: 90, label: 'Límite Hotspot 90°C', color: '#F59E0B' },
           ]}
+          emptyMessage="Temperaturas no disponibles (N/A). Instala y abre LibreHardwareMonitor como Administrador (puerto 8085)."
           series={[
             { id: 'gpuHot', label: 'GPU Hotspot', unit: '°C', color: '#F43F5E', values: history.map((s) => s.gpuHotspot) },
             { id: 'cpu', label: 'CPU', unit: '°C', color: '#06B6D4', values: history.map((s) => s.cpuTemp) },
@@ -289,7 +413,7 @@ export const LiveMonitorView: React.FC<LiveMonitorViewProps> = ({
 
         <TelemetryChart
           title="Carga del Sistema vs Ciclo de Ventiladores"
-          subtitle="Si los ventiladores superan el 80% con carga baja, revisa PWM o pasta térmica"
+          subtitle="La carga CPU es del sistema operativo; el % de ventiladores requiere LibreHardwareMonitor"
           timestamps={timestamps}
           minY={0}
           maxY={105}
@@ -311,7 +435,7 @@ export const LiveMonitorView: React.FC<LiveMonitorViewProps> = ({
               Canales de Ventilación y Sensores Secundarios
             </h3>
             <p className="text-xs text-slate-400">
-              VRM: {current.vrmTemp.toFixed(1)}°C · NVMe: {current.nvmeTemp.toFixed(1)}°C · Ambiente caja: {current.ambientTemp.toFixed(1)}°C
+              VRM: {fmtNum(current.vrmTemp, 1, '°C')} · NVMe: {fmtNum(current.nvmeTemp, 1, '°C')} · VRAM GPU: {fmtNum(current.gpuMemoryTemp ?? null, 1, '°C')} · Ambiente: {fmtNum(current.ambientTemp, 1, '°C')}
             </p>
           </div>
           <span className="text-xs font-mono text-slate-400 tabular-nums">
@@ -333,10 +457,10 @@ export const LiveMonitorView: React.FC<LiveMonitorViewProps> = ({
               {fanRows.map((row) => (
                 <tr key={row.name} className="hover:bg-[#161D2B] transition-colors h-10">
                   <td className="py-2 px-5 text-slate-200 font-medium">{row.name}</td>
-                  <td className="py-2 px-4 text-right font-mono tabular-nums text-slate-100">
-                    {row.rpm} RPM
+                  <td className={`py-2 px-4 text-right font-mono tabular-nums ${row.rpm === 'N/A' ? 'text-slate-500' : 'text-slate-100'}`}>
+                    {row.rpm}
                   </td>
-                  <td className="py-2 px-4 text-right font-mono tabular-nums text-cyan-300">
+                  <td className={`py-2 px-4 text-right font-mono tabular-nums ${row.duty === 'N/A' ? 'text-slate-500' : 'text-cyan-300'}`}>
                     {row.duty}
                   </td>
                   <td className="py-2 px-5 text-right text-xs text-slate-400">

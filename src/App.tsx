@@ -66,11 +66,14 @@ export default function App() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const [profile, setProfile] = useState<TelemetryProfileId>('noisy-clean-pc');
+  const profileRef = useRef<TelemetryProfileId>('noisy-clean-pc');
+  const hasManuallySelectedProfileRef = useRef(false);
   const [isStreaming, setIsStreaming] = useState(true);
   const [history, setHistory] = useState<TelemetrySample[]>(() =>
     buildInitialHistory('noisy-clean-pc'),
   );
   const tickRef = useRef(20);
+  profileRef.current = profile;
 
   const [alertRules, setAlertRules] = useState<AlertRule[]>(() => {
     try {
@@ -96,12 +99,23 @@ export default function App() {
     return DEFAULT_HARDWARE_COMPONENTS;
   });
 
-  const [hostStatus, setHostStatus] = useState({
+  const [hostStatus, setHostStatus] = useState<{
+    osLabel: string;
+    cpuModel: string;
+    cores: number;
+    lhmConnected: boolean;
+    lhmEndpoint: string | null;
+    sensorsCount: number;
+    detectedSensors: Array<{ category: string; text: string; value: string; path: string }>;
+    loading: boolean;
+  }>({
     osLabel: 'Detectando...',
     cpuModel: 'Detectando...',
     cores: 0,
     lhmConnected: false,
+    lhmEndpoint: null,
     sensorsCount: 0,
+    detectedSensors: [],
     loading: false,
   });
 
@@ -138,60 +152,76 @@ export default function App() {
       const data = await res.json();
       const osLabel = `${data.os?.distro || data.os?.platform || 'Host'} (${data.os?.arch || ''})`.trim();
 
+      const lhmConnected = Boolean(data.bridge?.libreHardwareMonitorConnected);
+      const detectedSensors = Array.isArray(data.bridge?.detectedSensorsPreview)
+        ? data.bridge.detectedSensorsPreview
+        : [];
+
       setHostStatus({
         osLabel,
         cpuModel: data.os?.cpuModel || 'CPU Host',
         cores: data.os?.cores || 0,
-        lhmConnected: Boolean(data.bridge?.libreHardwareMonitorConnected),
+        lhmConnected,
+        lhmEndpoint: data.bridge?.endpoint ?? null,
         sensorsCount: data.bridge?.detectedSensorsCount || 0,
+        detectedSensors,
         loading: false,
       });
 
       const now = data.timestamp || Date.now();
       const m = data.metrics || {};
       const v = m.voltages || {};
-      const cpuTemp = m.cpuTemp ?? 48;
-      const gpuTemp = m.gpuTemp ?? 44;
 
-      return {
+      const sample: TelemetrySample = {
         id: `host-${now}`,
         timestamp: now,
         timeLabel: formatTimeLabel(now),
-        sourceLabel: data.bridge?.libreHardwareMonitorConnected
-          ? 'LibreHardwareMonitor (Windows 10 en vivo)'
-          : 'Host Real del Sistema (Sensores SO)',
+        sourceLabel: lhmConnected
+          ? 'LibreHardwareMonitor (Sensores reales en vivo)'
+          : 'Host Real del Sistema (SO · Sin LibreHardwareMonitor)',
         osPlatform: osLabel,
-        cpuTemp,
-        cpuHotspot: cpuTemp + 6,
-        gpuTemp,
-        gpuHotspot: m.gpuHotspot ?? gpuTemp + 8,
-        vrmTemp: 46,
-        nvmeTemp: 41,
-        ambientTemp: 24,
-        cpuLoad: m.cpuLoad ?? 12,
-        gpuLoad: data.bridge?.libreHardwareMonitorConnected ? 18 : 0,
-        ramUsedPct: m.ramUsedPct ?? 35,
-        ramUsedGb: m.ramUsedGb ?? 8,
-        ramTotalGb: m.ramTotalGb ?? 16,
-        powerWatts: Math.round(55 + (m.cpuLoad ?? 10) * 1.4),
+        requiresLhm: !lhmConnected,
+        lhmConnected,
+        cpuTemp: m.cpuTemp ?? null,
+        cpuHotspot: m.cpuHotspot ?? null,
+        gpuTemp: m.gpuTemp ?? null,
+        gpuHotspot: m.gpuHotspot ?? null,
+        gpuMemoryTemp: m.gpuMemoryTemp ?? null,
+        vrmTemp: m.vrmTemp ?? null,
+        nvmeTemp: m.nvmeTemp ?? null,
+        ambientTemp: null,
+        cpuLoad: m.cpuLoad ?? 0,
+        gpuLoad: m.gpuLoad ?? null,
+        ramUsedPct: m.ramUsedPct ?? 0,
+        ramUsedGb: m.ramUsedGb ?? 0,
+        ramTotalGb: m.ramTotalGb ?? 0,
+        powerWatts: m.powerWatts ?? null,
         fans: {
-          cpuFanRpm: m.cpuFanRpm ?? 0,
-          cpuFanPct: m.cpuFanRpm ? Math.min(100, Math.round((m.cpuFanRpm / 2200) * 100)) : 0,
-          aioPumpRpm: 0,
-          sysFan1Rpm: 0,
-          sysFan2Rpm: 0,
-          gpuFanRpm: m.gpuFanRpm ?? 0,
-          gpuFanPct: m.gpuFanRpm ? Math.min(100, Math.round((m.gpuFanRpm / 2600) * 100)) : 0,
-          psuFanRpm: 0,
+          cpuFanRpm: m.cpuFanRpm ?? null,
+          cpuFanPct: m.cpuFanRpm !== null && m.cpuFanRpm !== undefined ? Math.min(100, Math.round((m.cpuFanRpm / 2200) * 100)) : null,
+          aioPumpRpm: m.aioPumpRpm ?? null,
+          sysFan1Rpm: m.sysFan1Rpm ?? null,
+          sysFan2Rpm: m.sysFan2Rpm ?? null,
+          gpuFanRpm: m.gpuFanRpm ?? null,
+          gpuFanPct: m.gpuFanPct ?? (m.gpuFanRpm !== null && m.gpuFanRpm !== undefined ? Math.min(100, Math.round((m.gpuFanRpm / 2600) * 100)) : null),
+          psuFanRpm: m.psuFanRpm ?? null,
         },
         voltages: {
-          rail12v: v.rail12v ?? 12.01,
-          rail5v: v.rail5v ?? 5.01,
-          rail33v: v.rail33v ?? 3.31,
-          vcore: v.vcore ?? 1.15,
-          dramVdd: 1.35,
+          rail12v: v.rail12v ?? null,
+          rail5v: v.rail5v ?? null,
+          rail33v: v.rail33v ?? null,
+          vcore: v.vcore ?? null,
+          dramVdd: v.dramVdd ?? null,
         },
       };
+
+      if (lhmConnected && !hasManuallySelectedProfileRef.current && profileRef.current !== 'host-live') {
+        profileRef.current = 'host-live';
+        setProfile('host-live');
+        setHistory([sample]);
+      }
+
+      return sample;
     } catch {
       setHostStatus((prev) => ({ ...prev, loading: false }));
       return null;
@@ -260,6 +290,8 @@ export default function App() {
   }, [activeAlerts, audibleAlarm]);
 
   const handleChangeProfile = (nextProfile: TelemetryProfileId) => {
+    hasManuallySelectedProfileRef.current = true;
+    profileRef.current = nextProfile;
     setProfile(nextProfile);
     if (nextProfile !== 'host-live') {
       tickRef.current = 20;
@@ -267,7 +299,7 @@ export default function App() {
     } else {
       void fetchHostSnapshot().then((sample) => {
         if (sample) {
-          setHistory((prev) => [...prev.slice(-(MAX_HISTORY - 1)), sample]);
+          setHistory([sample]);
         }
       });
     }
@@ -414,11 +446,17 @@ export default function App() {
               }}
               onGoToComponents={() => setActiveTab('components')}
               onGoToAi={() => void handleRunAiDiagnose()}
+              onGoToAlerts={() => setActiveTab('alerts')}
             />
           )}
 
           {activeTab === 'voltages' && (
-            <VoltageHistoryView history={history} stats={voltageStats} />
+            <VoltageHistoryView
+              history={history}
+              stats={voltageStats}
+              requiresLhm={Boolean(currentSample.requiresLhm)}
+              onGoToAlerts={() => setActiveTab('alerts')}
+            />
           )}
 
           {activeTab === 'components' && (

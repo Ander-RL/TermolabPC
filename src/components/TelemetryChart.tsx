@@ -6,7 +6,7 @@ export interface ChartSeries {
   unit: string;
   color: string;
   dashed?: boolean;
-  values: number[];
+  values: Array<number | null>;
 }
 
 interface TelemetryChartProps {
@@ -22,6 +22,7 @@ interface TelemetryChartProps {
     label: string;
     color: string;
   }>;
+  emptyMessage?: string;
   height?: number;
 }
 
@@ -34,6 +35,7 @@ export const TelemetryChart: React.FC<TelemetryChartProps> = ({
   maxY,
   yUnit,
   referenceBands = [],
+  emptyMessage = 'Sin lecturas de sensores (N/A) · Instala LibreHardwareMonitor para ver estos datos reales.',
   height = 240,
 }) => {
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
@@ -48,6 +50,11 @@ export const TelemetryChart: React.FC<TelemetryChartProps> = ({
 
   const count = timestamps.length;
   const ySpan = Math.max(0.001, maxY - minY);
+
+  const hasAnyData = useMemo(
+    () => series.some((s) => s.values.some((v) => v !== null)),
+    [series],
+  );
 
   const mapX = (idx: number) => {
     if (count <= 1) return padLeft + plotW / 2;
@@ -108,7 +115,7 @@ export const TelemetryChart: React.FC<TelemetryChartProps> = ({
                 />
                 <span className="text-slate-400">{s.label}:</span>
                 <span className="font-semibold text-slate-100">
-                  {latest !== undefined ? `${latest}${s.unit}` : '--'}
+                  {latest !== undefined && latest !== null ? `${latest}${s.unit}` : 'N/A'}
                 </span>
               </div>
             );
@@ -179,24 +186,49 @@ export const TelemetryChart: React.FC<TelemetryChartProps> = ({
             );
           })}
 
-          {/* Data series lines */}
+          {/* Data series lines (splitting cleanly across null gaps) */}
           {series.map((s) => {
-            if (s.values.length < 2) return null;
-            const points = s.values
-              .map((v, i) => `${mapX(i).toFixed(1)},${mapY(v).toFixed(1)}`)
-              .join(' ');
-            return (
-              <polyline
-                key={s.id}
-                fill="none"
-                stroke={s.color}
-                strokeWidth="2"
-                strokeLinejoin="round"
-                strokeLinecap="round"
-                strokeDasharray={s.dashed ? '5 4' : undefined}
-                points={points}
-              />
-            );
+            const segments: string[][] = [];
+            let currentSeg: string[] = [];
+
+            s.values.forEach((v, i) => {
+              if (v === null) {
+                if (currentSeg.length > 0) {
+                  segments.push(currentSeg);
+                  currentSeg = [];
+                }
+              } else {
+                currentSeg.push(`${mapX(i).toFixed(1)},${mapY(v).toFixed(1)}`);
+              }
+            });
+            if (currentSeg.length > 0) segments.push(currentSeg);
+
+            return segments.map((seg, segIdx) => {
+              if (seg.length === 1) {
+                const [cx, cy] = seg[0].split(',');
+                return (
+                  <circle
+                    key={`${s.id}-dot-${segIdx}`}
+                    cx={cx}
+                    cy={cy}
+                    r="3"
+                    fill={s.color}
+                  />
+                );
+              }
+              return (
+                <polyline
+                  key={`${s.id}-seg-${segIdx}`}
+                  fill="none"
+                  stroke={s.color}
+                  strokeWidth="2"
+                  strokeLinejoin="round"
+                  strokeLinecap="round"
+                  strokeDasharray={s.dashed ? '5 4' : undefined}
+                  points={seg.join(' ')}
+                />
+              );
+            });
           })}
 
           {/* X-axis edge timestamps */}
@@ -243,7 +275,7 @@ export const TelemetryChart: React.FC<TelemetryChartProps> = ({
               />
               {series.map((s) => {
                 const v = s.values[activeIdx];
-                if (v === undefined) return null;
+                if (v === undefined || v === null) return null;
                 return (
                   <circle
                     key={s.id}
@@ -260,16 +292,24 @@ export const TelemetryChart: React.FC<TelemetryChartProps> = ({
           )}
         </svg>
 
-        {activeIdx !== null && (
+        {!hasAnyData && (
+          <div className="mt-2 px-3 py-2 rounded-lg bg-[#0B0E14] border border-amber-500/30 text-xs text-amber-200/90 text-center">
+            {emptyMessage}
+          </div>
+        )}
+
+        {activeIdx !== null && hasAnyData && (
           <div className="mt-2 flex flex-wrap items-center justify-between gap-3 px-3 py-1.5 rounded-lg bg-[#0B0E14] border border-[#1E2636] text-xs font-mono tabular-nums">
             <span className="text-slate-400">Muestra: {timestamps[activeIdx]}</span>
             <div className="flex flex-wrap items-center gap-4">
-              {series.map((s) => (
-                <span key={s.id} style={{ color: s.color }}>
-                  {s.label}: {s.values[activeIdx]}
-                  {s.unit}
-                </span>
-              ))}
+              {series.map((s) => {
+                const val = s.values[activeIdx];
+                return (
+                  <span key={s.id} style={{ color: s.color }}>
+                    {s.label}: {val !== null && val !== undefined ? `${val}${s.unit}` : 'N/A'}
+                  </span>
+                );
+              })}
             </div>
           </div>
         )}

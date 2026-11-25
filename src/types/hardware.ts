@@ -6,22 +6,22 @@ export type TelemetryProfileId =
   | 'host-live';
 
 export interface VoltageReadings {
-  rail12v: number; // Nominal 12.00V (ATX ±5%: 11.40V - 12.60V)
-  rail5v: number;  // Nominal 5.00V  (ATX ±5%: 4.75V - 5.25V)
-  rail33v: number; // Nominal 3.30V  (ATX ±5%: 3.135V - 3.465V)
-  vcore: number;   // CPU Core Voltage (typically 0.80V - 1.45V)
-  dramVdd: number; // DDR4/DDR5 VDD (typically 1.20V - 1.35V)
+  rail12v: number | null; // Nominal 12.00V (ATX ±5%: 11.40V - 12.60V)
+  rail5v: number | null;  // Nominal 5.00V  (ATX ±5%: 4.75V - 5.25V)
+  rail33v: number | null; // Nominal 3.30V  (ATX ±5%: 3.135V - 3.465V)
+  vcore: number | null;   // CPU Core Voltage (typically 0.80V - 1.45V)
+  dramVdd: number | null; // DDR4/DDR5 VDD (typically 1.20V - 1.35V)
 }
 
 export interface FanReadings {
-  cpuFanRpm: number;
-  cpuFanPct: number;
-  aioPumpRpm: number;
-  sysFan1Rpm: number;
-  sysFan2Rpm: number;
-  gpuFanRpm: number;
-  gpuFanPct: number;
-  psuFanRpm: number;
+  cpuFanRpm: number | null;
+  cpuFanPct: number | null;
+  aioPumpRpm: number | null;
+  sysFan1Rpm: number | null;
+  sysFan2Rpm: number | null;
+  gpuFanRpm: number | null;
+  gpuFanPct: number | null;
+  psuFanRpm: number | null;
 }
 
 export interface TelemetrySample {
@@ -30,19 +30,22 @@ export interface TelemetrySample {
   timeLabel: string;
   sourceLabel: string;
   osPlatform: string;
-  cpuTemp: number;
-  cpuHotspot: number;
-  gpuTemp: number;
-  gpuHotspot: number;
-  vrmTemp: number;
-  nvmeTemp: number;
-  ambientTemp: number;
+  requiresLhm?: boolean;
+  lhmConnected?: boolean;
+  cpuTemp: number | null;
+  cpuHotspot: number | null;
+  gpuTemp: number | null;
+  gpuHotspot: number | null;
+  gpuMemoryTemp?: number | null;
+  vrmTemp: number | null;
+  nvmeTemp: number | null;
+  ambientTemp: number | null;
   cpuLoad: number;
-  gpuLoad: number;
+  gpuLoad: number | null;
   ramUsedPct: number;
   ramUsedGb: number;
   ramTotalGb: number;
-  powerWatts: number;
+  powerWatts: number | null;
   fans: FanReadings;
   voltages: VoltageReadings;
 }
@@ -88,21 +91,21 @@ export interface VoltageRailStats {
   nominal: number;
   minAllowed: number;
   maxAllowed: number;
-  current: number;
-  min: number;
-  max: number;
-  avg: number;
-  deviationPct: number;
-  inSpec: boolean;
+  current: number | null;
+  min: number | null;
+  max: number | null;
+  avg: number | null;
+  deviationPct: number | null;
+  inSpec: boolean | null;
 }
 
 export interface AcousticDiagnosis {
   headline: string;
-  severity: 'nominal' | 'warning' | 'critical';
+  severity: 'nominal' | 'warning' | 'critical' | 'unavailable';
   primaryCause: string;
   explanation: string;
-  hotspotDeltaGpu: number;
-  hotspotDeltaCpu: number;
+  hotspotDeltaGpu: number | null;
+  hotspotDeltaCpu: number | null;
   isFanRunawayAtLowLoad: boolean;
 }
 

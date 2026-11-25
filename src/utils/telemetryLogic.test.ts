@@ -78,7 +78,7 @@ test('evaluateAlerts detects critical GPU Hotspot and fan runaway at low load', 
 test('evaluateAlerts flags out-of-spec 12V rail deviation', () => {
   const sample = createBaseSample({
     voltages: {
-      rail12v: 11.38, // -5.17% deviation from 12.0V
+      rail12v: 11.38,
       rail5v: 5.0,
       rail33v: 3.3,
       vcore: 1.2,
@@ -93,7 +93,39 @@ test('evaluateAlerts flags out-of-spec 12V rail deviation', () => {
   assert.equal(railAlert.severity, 'critical');
 });
 
-test('calculateVoltageStats computes min, max, avg and ATX tolerance accurately', () => {
+test('evaluateAlerts ignores null sensors when LibreHardwareMonitor is not installed', () => {
+  const sample = createBaseSample({
+    requiresLhm: true,
+    cpuTemp: null,
+    cpuHotspot: null,
+    gpuTemp: null,
+    gpuHotspot: null,
+    vrmTemp: null,
+    nvmeTemp: null,
+    fans: {
+      cpuFanRpm: null,
+      cpuFanPct: null,
+      aioPumpRpm: null,
+      sysFan1Rpm: null,
+      sysFan2Rpm: null,
+      gpuFanRpm: null,
+      gpuFanPct: null,
+      psuFanRpm: null,
+    },
+    voltages: {
+      rail12v: null,
+      rail5v: null,
+      rail33v: null,
+      vcore: null,
+      dramVdd: null,
+    },
+  });
+
+  const alerts = evaluateAlerts(sample, DEFAULT_ALERT_RULES);
+  assert.equal(alerts.length, 0);
+});
+
+test('calculateVoltageStats computes min, max, avg and ATX tolerance accurately and returns null when unavailable', () => {
   const s1 = createBaseSample({
     voltages: { rail12v: 12.0, rail5v: 5.0, rail33v: 3.3, vcore: 1.2, dramVdd: 1.35 },
   });
@@ -107,7 +139,44 @@ test('calculateVoltageStats computes min, max, avg and ATX tolerance accurately'
   assert.equal(rail12.min, 11.3);
   assert.equal(rail12.max, 12.0);
   assert.equal(rail12.avg, 11.65);
-  assert.equal(rail12.inSpec, false); // 11.3V is below 11.40V ATX limit
+  assert.equal(rail12.inSpec, false);
+
+  const nullSample = createBaseSample({
+    voltages: { rail12v: null, rail5v: null, rail33v: null, vcore: null, dramVdd: null },
+  });
+  const nullStats = calculateVoltageStats([nullSample]);
+  assert.equal(nullStats[0].current, null);
+  assert.equal(nullStats[0].inSpec, null);
+});
+
+test('diagnoseFanAcousticCause identifies unavailable sensors when LHM is missing', () => {
+  const sample = createBaseSample({
+    requiresLhm: true,
+    cpuTemp: null,
+    gpuTemp: null,
+    gpuHotspot: null,
+    fans: {
+      cpuFanRpm: null,
+      cpuFanPct: null,
+      aioPumpRpm: null,
+      sysFan1Rpm: null,
+      sysFan2Rpm: null,
+      gpuFanRpm: null,
+      gpuFanPct: null,
+      psuFanRpm: null,
+    },
+    voltages: {
+      rail12v: null,
+      rail5v: null,
+      rail33v: null,
+      vcore: null,
+      dramVdd: null,
+    },
+  });
+
+  const diagnosis = diagnoseFanAcousticCause(sample);
+  assert.equal(diagnosis.severity, 'unavailable');
+  assert.match(diagnosis.headline, /LibreHardwareMonitor/i);
 });
 
 test('diagnoseFanAcousticCause identifies dried thermal paste pump-out when GPU hotspot delta >= 18C', () => {
@@ -115,7 +184,7 @@ test('diagnoseFanAcousticCause identifies dried thermal paste pump-out when GPU 
   const diagnosis = diagnoseFanAcousticCause(noisySample);
 
   assert.equal(diagnosis.severity, 'critical');
-  assert.ok(diagnosis.hotspotDeltaGpu >= 18);
+  assert.ok(diagnosis.hotspotDeltaGpu !== null && diagnosis.hotspotDeltaGpu >= 18);
   assert.match(diagnosis.headline, /Delta térmico GPU/i);
 });
 

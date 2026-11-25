@@ -3,8 +3,18 @@ import express, { type Request, type Response } from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import si from 'systeminformation';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import { GoogleGenAI, Type } from '@google/genai';
 import { createServer as createViteServer } from 'vite';
+import {
+  extractLhmMetrics,
+  flattenLhmNodes,
+  type FlattenedLhmSensor,
+  type LhmNode,
+} from './src/utils/lhmParser';
+
+const execFileAsync = promisify(execFile);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -26,76 +36,68 @@ function getAiClient(): GoogleGenAI | null {
   });
 }
 
-interface LhmNode {
-  Text?: string;
-  Value?: string;
-  Children?: LhmNode[];
-}
-
-function parseLhmNumber(val?: string): number | null {
-  if (!val) return null;
-  const cleaned = val.replace(',', '.').match(/-?\d+(\.\d+)?/);
-  if (!cleaned) return null;
-  const num = Number(cleaned[0]);
-  return Number.isFinite(num) ? num : null;
-}
-
-function flattenLhmNodes(
-  node: LhmNode,
-  trail: string[] = [],
-  acc: Array<{ path: string; text: string; value: string }> = [],
-) {
-  const nextTrail = node.Text ? [...trail, node.Text] : trail;
-  if (node.Value && node.Text) {
-    acc.push({
-      path: nextTrail.join(' > '),
-      text: node.Text,
-      value: node.Value,
-    });
-  }
-  if (Array.isArray(node.Children)) {
-    for (const child of node.Children) {
-      flattenLhmNodes(child, nextTrail, acc);
-    }
-  }
-  return acc;
-}
-
-async function probeLibreHardwareMonitor(): Promise<{
-  connected: boolean;
-  sensors: Array<{ path: string; text: string; value: string }>;
-}> {
+async function fetchLhmJson(url: string, timeoutMs = 800): Promise<LhmNode | null> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 350);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch('http://127.0.0.1:8085/data.json', {
-      signal: controller.signal,
-    });
-    if (!res.ok) {
-      return { connected: false, sensors: [] };
-    }
-    const data = (await res.json()) as LhmNode;
-    const sensors = flattenLhmNodes(data);
-    return { connected: sensors.length > 0, sensors };
+    const res = await fetch(url, { signal: controller.signal });
+    if (!res.ok) return null;
+    return (await res.json()) as LhmNode;
   } catch {
-    return { connected: false, sensors: [] };
+    return null;
   } finally {
     clearTimeout(timeout);
   }
 }
 
-function findSensorValue(
-  sensors: Array<{ path: string; text: string; value: string }>,
-  patterns: RegExp[],
-): number | null {
-  for (const p of patterns) {
-    const match = sensors.find((s) => p.test(s.path) || p.test(s.text));
-    if (match) {
-      const parsed = parseLhmNumber(match.value);
-      if (parsed !== null) return parsed;
+async function probeLibreHardwareMonitor(): Promise<{
+  connected: boolean;
+  endpoint: string | null;
+  sensors: FlattenedLhmSensor[];
+}> {
+  const endpoints = [
+    'http://127.0.0.1:8085/data.json',
+    'http://localhost:8085/data.json',
+  ];
+
+  for (const url of endpoints) {
+    const data = await fetchLhmJson(url, 800);
+    if (data) {
+      const sensors = flattenLhmNodes(data);
+      if (sensors.length > 0) {
+        return { connected: true, endpoint: url, sensors };
+      }
     }
   }
-  return null;
+
+  return { connected: false, endpoint: null, sensors: [] };
+}
+
+async function probeNvidiaSmi(): Promise<{
+  gpuTemp: number | null;
+  gpuLoad: number | null;
+  gpuFanPct: number | null;
+  powerWatts: number | null;
+}> {
+  try {
+    const { stdout } = await execFileAsync(
+      'nvidia-smi',
+      [
+        '--query-gpu=temperature.gpu,utilization.gpu,fan.speed,power.draw',
+        '--format=csv,noheader,nounits',
+      ],
+      { timeout: 500 },
+    );
+    const firstLine = stdout.trim().split('\n')[0];
+    if (!firstLine) return { gpuTemp: null, gpuLoad: null, gpuFanPct: null, powerWatts: null };
+    const [t, u, f, p] = firstLine.split(',').map((part) => {
+      const n = Number(part.trim());
+      return Number.isFinite(n) ? n : null;
+    });
+    return { gpuTemp: t ?? null, gpuLoad: u ?? null, gpuFanPct: f ?? null, powerWatts: p ?? null };
+  } catch {
+    return { gpuTemp: null, gpuLoad: null, gpuFanPct: null, powerWatts: null };
+  }
 }
 
 async function startServer() {
@@ -117,24 +119,62 @@ async function startServer() {
         probeLibreHardwareMonitor(),
       ]);
 
+      const nvidia = lhm.connected ? null : await probeNvidiaSmi();
+
       const now = Date.now();
       const lhmSensors = lhm.sensors;
+      const parsed = extractLhmMetrics(lhmSensors);
 
       const realCpuTemp =
-        findSensorValue(lhmSensors, [/CPU Package/i, /Core \(Tctl\/Tdie\)/i, /CPU.*Temp/i]) ??
-        (temp.main && temp.main > 0 ? temp.main : null);
-      const realGpuTemp = findSensorValue(lhmSensors, [/GPU Core.*°C/i, /GPU Core/i]);
-      const realGpuHotspot = findSensorValue(lhmSensors, [/GPU Hot Spot/i, /Hotspot/i]);
-      const realCpuFan = findSensorValue(lhmSensors, [/CPU Fan/i, /Fan #1/i]);
-      const realGpuFan = findSensorValue(lhmSensors, [/GPU Fan/i]);
-      const real12v = findSensorValue(lhmSensors, [/\+12V/i, /12V/i]);
-      const real5v = findSensorValue(lhmSensors, [/\+5V/i]);
-      const real33v = findSensorValue(lhmSensors, [/\+3\.3V/i, /3\.3V/i]);
-      const realVcore = findSensorValue(lhmSensors, [/Vcore/i, /CPU Core.*V/i]);
+        parsed.cpuTemp ?? (temp.main && temp.main > 0 ? temp.main : null);
+      const realCpuHotspot = parsed.cpuHotspot;
+      const realGpuTemp = parsed.gpuTemp ?? nvidia?.gpuTemp ?? null;
+      const realGpuHotspot = parsed.gpuHotspot;
+      const realGpuMemoryTemp = parsed.gpuMemoryTemp;
+      const realVrmTemp = parsed.vrmTemp;
+      const realNvmeTemp = parsed.nvmeTemp;
+      const realGpuLoad = parsed.gpuLoad ?? nvidia?.gpuLoad ?? null;
+      const realPowerWatts = parsed.powerWatts ?? nvidia?.powerWatts ?? null;
+
+      const realCpuFan = parsed.cpuFanRpm;
+      const realAioPump = parsed.aioPumpRpm;
+      const realSysFan1 = parsed.sysFan1Rpm;
+      const realSysFan2 = parsed.sysFan2Rpm;
+      const realGpuFan = parsed.gpuFanRpm;
+      const realGpuFanPct = parsed.gpuFanPct ?? nvidia?.gpuFanPct ?? null;
+      const realPsuFan = parsed.psuFanRpm;
+
+      const real12v = parsed.rail12v;
+      const real5v = parsed.rail5v;
+      const real33v = parsed.rail33v;
+      const realVcore = parsed.vcore;
+      const realDramVdd = parsed.dramVdd;
 
       const ramTotalGb = Math.round((mem.total / (1024 ** 3)) * 10) / 10;
       const ramUsedGb = Math.round((mem.active / (1024 ** 3)) * 10) / 10;
       const ramUsedPct = Math.round((mem.active / mem.total) * 1000) / 10;
+
+      const previewCategories = new Set([
+        'temperatures',
+        'voltages',
+        'fans',
+        'controls',
+        'powers',
+        'load',
+      ]);
+      const prioritizedSensors = lhmSensors.filter((s) =>
+        previewCategories.has(s.category),
+      );
+      const detectedSensorsPreview = (
+        prioritizedSensors.length > 0 ? prioritizedSensors : lhmSensors
+      )
+        .slice(0, 60)
+        .map((s) => ({
+          category: s.category || 'sensor',
+          text: s.text,
+          value: s.value,
+          path: s.path,
+        }));
 
       res.json({
         timestamp: now,
@@ -149,26 +189,40 @@ async function startServer() {
         },
         bridge: {
           libreHardwareMonitorConnected: lhm.connected,
+          endpoint: lhm.endpoint,
           detectedSensorsCount: lhmSensors.length,
-          hasThermalSensors: realCpuTemp !== null,
+          detectedSensorsPreview,
+          hasThermalSensors: realCpuTemp !== null || realGpuTemp !== null,
           hasVoltageSensors: real12v !== null || realVcore !== null,
           hasFanSensors: realCpuFan !== null || realGpuFan !== null,
         },
         metrics: {
           cpuLoad: Math.round(load.currentLoad * 10) / 10,
+          gpuLoad: realGpuLoad,
           ramUsedPct,
           ramUsedGb,
           ramTotalGb,
+          powerWatts: realPowerWatts,
           cpuTemp: realCpuTemp,
+          cpuHotspot: realCpuHotspot,
           gpuTemp: realGpuTemp,
           gpuHotspot: realGpuHotspot,
+          gpuMemoryTemp: realGpuMemoryTemp,
+          vrmTemp: realVrmTemp,
+          nvmeTemp: realNvmeTemp,
           cpuFanRpm: realCpuFan,
+          aioPumpRpm: realAioPump,
+          sysFan1Rpm: realSysFan1,
+          sysFan2Rpm: realSysFan2,
           gpuFanRpm: realGpuFan,
+          gpuFanPct: realGpuFanPct,
+          psuFanRpm: realPsuFan,
           voltages: {
             rail12v: real12v,
             rail5v: real5v,
             rail33v: real33v,
             vcore: realVcore,
+            dramVdd: realDramVdd,
           },
         },
       });

@@ -57,6 +57,11 @@ export const AiConsultantView: React.FC<AiConsultantViewProps> = ({
     setChatInput('');
   };
 
+  const fanCandidates = [currentTelemetry.fans.cpuFanRpm, currentTelemetry.fans.gpuFanRpm].filter(
+    (v): v is number => v !== null,
+  );
+  const peakFanText = fanCandidates.length > 0 ? `${Math.max(...fanCandidates)} RPM` : 'N/A';
+
   return (
     <div className="space-y-6">
       {/* Context Summary & Trigger Bar */}
@@ -68,7 +73,7 @@ export const AiConsultantView: React.FC<AiConsultantViewProps> = ({
               <span>Diagnóstico Asistido con Telemetría en Vivo</span>
             </h2>
             <p className="text-xs text-slate-400 font-mono tabular-nums">
-              Contexto enviado a la IA: CPU {currentTelemetry.cpuTemp}°C · GPU Hotspot {currentTelemetry.gpuHotspot}°C · Pico {Math.max(currentTelemetry.fans.cpuFanRpm, currentTelemetry.fans.gpuFanRpm)} RPM · +12V {currentTelemetry.voltages.rail12v.toFixed(3)}V
+              Contexto enviado a la IA: CPU {currentTelemetry.cpuTemp !== null ? `${currentTelemetry.cpuTemp}°C` : 'N/A'} · GPU Hotspot {currentTelemetry.gpuHotspot !== null ? `${currentTelemetry.gpuHotspot}°C` : 'N/A'} · Pico {peakFanText} · +12V {currentTelemetry.voltages.rail12v !== null ? `${currentTelemetry.voltages.rail12v.toFixed(3)}V` : 'N/A'}
             </p>
           </div>
 

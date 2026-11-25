@@ -36,9 +36,9 @@ Panel de control multiplataforma en modo oscuro diseñado para diagnosticar prob
 
 Antes de empezar, asegúrate de tener instalado en tu ordenador:
 
-1. **Node.js (versión 20 LTS o 22 LTS recomendada)** — incluye `npm`.
-   - En Windows 10, descárgalo desde [nodejs.org](https://nodejs.org/) (instalador `.msi` oficial, deja marcada la opción *"Add to PATH"*).
-   - Para comprobar si ya lo tienes instalado, abre **PowerShell** o **CMD** y ejecuta:
+1. **Node.js 22 LTS (`>= 22.12.0`)** — incluye `npm` *(versiones antiguas como Node `20.11.0` no son compatibles con Vite 8 / `@google/genai` 3.x)*.
+   - En Windows 10, descárgalo desde [nodejs.org](https://nodejs.org/) (instalador `.msi` oficial de la versión **22 LTS** o superior) o actualiza con `winget install OpenJS.NodeJS.LTS`.
+   - Para comprobar qué versión tienes instalada, abre **PowerShell** o **CMD** y ejecuta:
      ```bash
      node -v
      npm -v
@@ -129,6 +129,14 @@ http://localhost:3000
 ```
 
 La aplicación ya estará funcionando en tiempo real con los perfiles de diagnóstico y lista para conectar con tus sensores locales o con Gemini AI.
+
+### Acceso directo en el Escritorio (sin usar PowerShell cada vez)
+
+El proyecto incluye el lanzador **`Iniciar-TermoLab.bat`** en la carpeta raíz:
+
+1. Haz **doble clic en `Iniciar-TermoLab.bat`**: arrancará el servidor automáticamente y abrirá `http://localhost:3000` en tu navegador tras 3 segundos.
+2. Para crear un **acceso directo en el Escritorio**: haz clic derecho sobre `Iniciar-TermoLab.bat` → **Enviar a** → **Escritorio (crear acceso directo)** *(si quieres que arranque minimizado en la barra de tareas, clic derecho en el acceso directo → Propiedades → Ejecutar: **Minimizada**)*.
+3. **Para cerrarlo**: simplemente cierra la ventana negra de `TermoLab PC` (botón `X`) o pulsa `Ctrl + C`.
 
 ### (Opcional) Ejecutar en modo producción compilado en local
 
